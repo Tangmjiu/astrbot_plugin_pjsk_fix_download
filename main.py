@@ -147,28 +147,28 @@ class PJSKPlugin(Star):
             raise
 
     async def _ensure_playwright_browser(self):
-        """Install playwright chromium browser if not installed."""
+        """Install playwright chromium browser if not installed.
+
+        Uses playwright CLI commands for browser management instead of
+        launching a full browser instance to check installation status.
+        """
         import asyncio
         import sys
         import platform
 
+        # Step 1: Check if playwright package is installed
         try:
-            # Check if chromium is already installed by trying to import and check
-            from playwright.async_api import async_playwright
+            import playwright  # noqa: F401
+        except ImportError:
+            logger.error("Playwright 未安装，请执行: pip install playwright")
+            raise RuntimeError("Playwright is not installed")
 
-            async with async_playwright() as p:
-                # Try to get browser executable path
-                try:
-                    browser = await p.chromium.launch()
-                    await browser.close()
-                    logger.debug("Playwright chromium 已安装")
-                    return
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        # Step 2: Check if chromium is already installed (lightweight check)
+        if self._is_chromium_installed():
+            logger.debug("Playwright chromium 已安装，跳过安装步骤")
+            return
 
-        # On Linux, install system dependencies first
+        # Step 3: On Linux, install system dependencies first
         if platform.system() == "Linux":
             logger.info("正在安装 Playwright 系统依赖...")
             try:
@@ -193,7 +193,7 @@ class PJSKPlugin(Star):
             except Exception as e:
                 logger.warning(f"Playwright 系统依赖安装失败 (可能需要 sudo): {e}")
 
-        # Install chromium
+        # Step 4: Install chromium via playwright CLI
         logger.info("正在安装 Playwright chromium 浏览器...")
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -214,6 +214,48 @@ class PJSKPlugin(Star):
             logger.error("Playwright 安装超时")
         except Exception as e:
             logger.error(f"Playwright 安装失败: {e}")
+
+    @staticmethod
+    def _is_chromium_installed() -> bool:
+        """Check if chromium browser binaries exist in playwright's browser directory.
+
+        Uses a lightweight filesystem check instead of launching a full browser,
+        avoiding the overhead of a browser process just to verify installation.
+        """
+        import os
+        import platform
+        from pathlib import Path
+
+        browsers_path_env = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+        if browsers_path_env:
+            browsers_path = Path(browsers_path_env)
+        else:
+            system = platform.system()
+            if system == "Darwin":
+                browsers_path = Path.home() / "Library" / "Caches" / "ms-playwright"
+            elif system == "Windows":
+                local_app_data = os.environ.get("LOCALAPPDATA", "")
+                if local_app_data:
+                    browsers_path = Path(local_app_data) / "ms-playwright"
+                else:
+                    browsers_path = (
+                        Path.home() / "AppData" / "Local" / "ms-playwright"
+                    )
+            else:  # Linux and others
+                browsers_path = Path.home() / ".cache" / "ms-playwright"
+
+        if not browsers_path.exists():
+            return False
+
+        try:
+            return any(
+                item.is_dir()
+                and item.name.startswith("chromium")
+                and any(item.iterdir())
+                for item in browsers_path.iterdir()
+            )
+        except Exception:
+            return False
 
     @filter.command("pjsk")
     async def pjsk_generate(self, event: AstrMessageEvent):
