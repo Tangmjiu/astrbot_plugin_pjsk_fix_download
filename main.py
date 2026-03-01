@@ -165,7 +165,7 @@ class PJSKPlugin(Star):
 
         # Step 2: Check if chromium is already installed (lightweight check)
         if self._is_chromium_installed():
-            logger.debug("Playwright chromium 已安装，跳过安装步骤")
+            logger.info("Playwright chromium 已安装，跳过安装步骤")
             return
 
         # Step 3: On Linux, install system dependencies first
@@ -216,41 +216,134 @@ class PJSKPlugin(Star):
             logger.error(f"Playwright 安装失败: {e}")
 
     @staticmethod
-    def _is_chromium_installed() -> bool:
-        """Check if chromium browser binaries exist in playwright's browser directory.
+    def _get_browsers_path():
+        """Get the playwright browsers directory path.
 
-        Uses a lightweight filesystem check instead of launching a full browser,
-        avoiding the overhead of a browser process just to verify installation.
+        Mirrors playwright's own ``registryDirectory`` logic so that the
+        path we check is consistent with the one playwright actually uses.
         """
         import os
         import platform
         from pathlib import Path
 
         browsers_path_env = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-        if browsers_path_env:
-            browsers_path = Path(browsers_path_env)
-        else:
-            system = platform.system()
-            if system == "Darwin":
-                browsers_path = Path.home() / "Library" / "Caches" / "ms-playwright"
-            elif system == "Windows":
-                local_app_data = os.environ.get("LOCALAPPDATA", "")
-                if local_app_data:
-                    browsers_path = Path(local_app_data) / "ms-playwright"
-                else:
-                    browsers_path = (
-                        Path.home() / "AppData" / "Local" / "ms-playwright"
-                    )
-            else:  # Linux and others
-                browsers_path = Path.home() / ".cache" / "ms-playwright"
+        if browsers_path_env == "0":
+            # "0" means use playwright package's local .local-browsers directory
+            try:
+                import playwright as pw
 
-        if not browsers_path.exists():
+                return (
+                    Path(pw.__file__).parent
+                    / "driver"
+                    / "package"
+                    / ".local-browsers"
+                )
+            except (ImportError, AttributeError):
+                return None
+        elif browsers_path_env:
+            return Path(browsers_path_env)
+
+        system = platform.system()
+        if system == "Darwin":
+            return Path.home() / "Library" / "Caches" / "ms-playwright"
+        elif system == "Windows":
+            local_app_data = os.environ.get("LOCALAPPDATA", "")
+            if local_app_data:
+                return Path(local_app_data) / "ms-playwright"
+            return Path.home() / "AppData" / "Local" / "ms-playwright"
+        else:  # Linux and others
+            cache_home = os.environ.get("XDG_CACHE_HOME", "")
+            if cache_home:
+                return Path(cache_home) / "ms-playwright"
+            return Path.home() / ".cache" / "ms-playwright"
+
+    @staticmethod
+    def _is_chromium_installed() -> bool:
+        """Check if chromium browser binaries exist in playwright's browser directory.
+
+        Uses playwright's bundled ``browsers.json`` to determine the exact
+        chromium revision expected by the installed playwright version, then
+        verifies the actual browser executable exists on disk.  This avoids
+        both false negatives (e.g. wrong cache path) and false positives
+        (e.g. partial / interrupted downloads).
+        """
+        import json
+        import os
+        import platform
+        from pathlib import Path
+
+        browsers_path = PJSKPlugin._get_browsers_path()
+        if browsers_path is None or not browsers_path.exists():
             return False
 
+        # --- primary check: version-aware executable verification ----------
+        try:
+            import playwright as pw
+
+            browsers_json = (
+                Path(pw.__file__).parent
+                / "driver"
+                / "package"
+                / "browsers.json"
+            )
+            if browsers_json.exists():
+                with open(browsers_json, encoding="utf-8") as f:
+                    data = json.load(f)
+
+                chromium_entry = next(
+                    (
+                        b
+                        for b in data.get("browsers", [])
+                        if b["name"] == "chromium"
+                    ),
+                    None,
+                )
+                if chromium_entry:
+                    revision = chromium_entry["revision"]
+                    chromium_dir = browsers_path / f"chromium-{revision}"
+
+                    if chromium_dir.is_dir():
+                        system = platform.system()
+                        machine = platform.machine().lower()
+                        # Candidate executable sub-paths matching playwright's
+                        # EXECUTABLE_PATHS for each platform/arch.
+                        if system == "Linux":
+                            if machine == "aarch64":
+                                candidates = [("chrome-linux", "chrome")]
+                            else:
+                                candidates = [("chrome-linux64", "chrome")]
+                        elif system == "Darwin":
+                            base = (
+                                "chrome-mac-arm64"
+                                if machine == "arm64"
+                                else "chrome-mac-x64"
+                            )
+                            candidates = [
+                                (
+                                    base,
+                                    "Google Chrome for Testing.app",
+                                    "Contents",
+                                    "MacOS",
+                                    "Google Chrome for Testing",
+                                )
+                            ]
+                        elif system == "Windows":
+                            candidates = [("chrome-win64", "chrome.exe")]
+                        else:
+                            candidates = []
+
+                        for parts in candidates:
+                            exe = chromium_dir.joinpath(*parts)
+                            if exe.exists():
+                                return True
+        except (ImportError, json.JSONDecodeError, KeyError, OSError) as exc:
+            logger.debug(f"Playwright chromium 版本检测失败，使用回退检测: {exc}")
+
+        # --- fallback: any non-empty chromium directory --------------------
         try:
             return any(
                 item.is_dir()
-                and item.name.startswith("chromium")
+                and item.name.startswith("chromium-")
                 and any(item.iterdir())
                 for item in browsers_path.iterdir()
             )
