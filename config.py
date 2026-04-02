@@ -13,11 +13,11 @@ DEFAULT_CONFIG = {
 
 # Asset prefixes (not configurable via WebUI for simplicity)
 PJSK_ASSETS_PREFIX: List[str] = [
-    "https://raw.githubusercontent.com/TheOriginalAyaka/sekai-stickers/main/",
+    "https://github.com/TheOriginalAyaka/sekai-stickers/archive/refs/heads/main.zip",
 ]
 
 PJSK_REPO_PREFIX: List[str] = [
-    "https://raw.githubusercontent.com/Agnes4m/nonebot_plugin_pjsk/main/",
+    "https://github.com/lgc-NB2Dev/nonebot-plugin-pjsk/archive/refs/heads/main.zip",
 ]
 
 
